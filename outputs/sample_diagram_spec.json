@@ -1,0 +1,308 @@
+{
+  "title": "Pharmacy, Nursing and Hostel Block - Water Automation",
+  "summary": "Demo topology interpreted from the supplied handwritten site sketch.",
+  "nodes": [
+    {
+      "id": "medical_bore",
+      "label": "Medical College Bore",
+      "node_type": "bore",
+      "x": 0.11,
+      "y": 0.28,
+      "width": 0.15,
+      "height": 0.09,
+      "details": [
+        "2 inch line"
+      ],
+      "confidence": 0.78
+    },
+    {
+      "id": "h_block_bore",
+      "label": "H Block Bore",
+      "node_type": "bore",
+      "x": 0.29,
+      "y": 0.2,
+      "width": 0.14,
+      "height": 0.09,
+      "details": [
+        "1.5 inch line"
+      ],
+      "confidence": 0.76
+    },
+    {
+      "id": "j_block_bore",
+      "label": "J Block Bore",
+      "node_type": "bore",
+      "x": 0.47,
+      "y": 0.18,
+      "width": 0.14,
+      "height": 0.09,
+      "details": [
+        "2 inch line"
+      ],
+      "confidence": 0.8
+    },
+    {
+      "id": "raw_sump",
+      "label": "Raw Water Sump",
+      "node_type": "sump",
+      "x": 0.36,
+      "y": 0.43,
+      "width": 0.2,
+      "height": 0.13,
+      "details": [
+        "Bore water",
+        "Approx. 2.75 lakh"
+      ],
+      "confidence": 0.9
+    },
+    {
+      "id": "motor_1",
+      "label": "Motor 1",
+      "node_type": "motor",
+      "x": 0.58,
+      "y": 0.4,
+      "width": 0.08,
+      "height": 0.07,
+      "details": [],
+      "confidence": 0.72
+    },
+    {
+      "id": "motor_2",
+      "label": "Motor 2",
+      "node_type": "motor",
+      "x": 0.67,
+      "y": 0.4,
+      "width": 0.08,
+      "height": 0.07,
+      "details": [],
+      "confidence": 0.72
+    },
+    {
+      "id": "motor_3",
+      "label": "Motor 3",
+      "node_type": "motor",
+      "x": 0.76,
+      "y": 0.4,
+      "width": 0.08,
+      "height": 0.07,
+      "details": [],
+      "confidence": 0.72
+    },
+    {
+      "id": "nursing_oht",
+      "label": "Nursing OHT",
+      "node_type": "oht",
+      "x": 0.1,
+      "y": 0.69,
+      "width": 0.14,
+      "height": 0.1,
+      "details": [],
+      "confidence": 0.82
+    },
+    {
+      "id": "nursing_sump",
+      "label": "Nursing Sump",
+      "node_type": "sump",
+      "x": 0.27,
+      "y": 0.83,
+      "width": 0.16,
+      "height": 0.11,
+      "details": [],
+      "confidence": 0.82
+    },
+    {
+      "id": "h_block_sump",
+      "label": "H Block Sump",
+      "node_type": "sump",
+      "x": 0.48,
+      "y": 0.75,
+      "width": 0.16,
+      "height": 0.11,
+      "details": [],
+      "confidence": 0.72
+    },
+    {
+      "id": "pharmacy_bore",
+      "label": "Pharmacy Bore",
+      "node_type": "bore",
+      "x": 0.64,
+      "y": 0.68,
+      "width": 0.14,
+      "height": 0.09,
+      "details": [],
+      "confidence": 0.8
+    },
+    {
+      "id": "pharmacy_sump",
+      "label": "Pharmacy Sump",
+      "node_type": "sump",
+      "x": 0.78,
+      "y": 0.75,
+      "width": 0.17,
+      "height": 0.11,
+      "details": [],
+      "confidence": 0.9
+    },
+    {
+      "id": "j_block_oht",
+      "label": "J Block OHT",
+      "node_type": "oht",
+      "x": 0.69,
+      "y": 0.18,
+      "width": 0.14,
+      "height": 0.1,
+      "details": [],
+      "confidence": 0.84
+    },
+    {
+      "id": "k_block_oht",
+      "label": "K Block OHT",
+      "node_type": "oht",
+      "x": 0.84,
+      "y": 0.3,
+      "width": 0.14,
+      "height": 0.1,
+      "details": [],
+      "confidence": 0.8
+    },
+    {
+      "id": "pharmacy_oht",
+      "label": "Pharmacy OHT",
+      "node_type": "oht",
+      "x": 0.88,
+      "y": 0.6,
+      "width": 0.14,
+      "height": 0.1,
+      "details": [],
+      "confidence": 0.84
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "medical_bore",
+      "target": "raw_sump",
+      "label": "",
+      "pipe_size": "2 inch",
+      "direction": "source_to_target",
+      "confidence": 0.75
+    },
+    {
+      "id": "e2",
+      "source": "h_block_bore",
+      "target": "raw_sump",
+      "label": "",
+      "pipe_size": "1.5 inch",
+      "direction": "source_to_target",
+      "confidence": 0.74
+    },
+    {
+      "id": "e3",
+      "source": "j_block_bore",
+      "target": "raw_sump",
+      "label": "",
+      "pipe_size": "2 inch",
+      "direction": "source_to_target",
+      "confidence": 0.78
+    },
+    {
+      "id": "e4",
+      "source": "raw_sump",
+      "target": "motor_1",
+      "label": "",
+      "pipe_size": "",
+      "direction": "source_to_target",
+      "confidence": 0.7
+    },
+    {
+      "id": "e5",
+      "source": "raw_sump",
+      "target": "motor_2",
+      "label": "",
+      "pipe_size": "",
+      "direction": "source_to_target",
+      "confidence": 0.7
+    },
+    {
+      "id": "e6",
+      "source": "raw_sump",
+      "target": "motor_3",
+      "label": "",
+      "pipe_size": "",
+      "direction": "source_to_target",
+      "confidence": 0.7
+    },
+    {
+      "id": "e7",
+      "source": "motor_1",
+      "target": "nursing_oht",
+      "label": "",
+      "pipe_size": "",
+      "direction": "source_to_target",
+      "confidence": 0.62
+    },
+    {
+      "id": "e8",
+      "source": "nursing_oht",
+      "target": "nursing_sump",
+      "label": "",
+      "pipe_size": "2 inch",
+      "direction": "source_to_target",
+      "confidence": 0.7
+    },
+    {
+      "id": "e9",
+      "source": "motor_2",
+      "target": "h_block_sump",
+      "label": "",
+      "pipe_size": "",
+      "direction": "source_to_target",
+      "confidence": 0.6
+    },
+    {
+      "id": "e10",
+      "source": "motor_3",
+      "target": "j_block_oht",
+      "label": "",
+      "pipe_size": "",
+      "direction": "source_to_target",
+      "confidence": 0.66
+    },
+    {
+      "id": "e11",
+      "source": "motor_3",
+      "target": "k_block_oht",
+      "label": "",
+      "pipe_size": "",
+      "direction": "source_to_target",
+      "confidence": 0.64
+    },
+    {
+      "id": "e12",
+      "source": "pharmacy_bore",
+      "target": "pharmacy_sump",
+      "label": "",
+      "pipe_size": "",
+      "direction": "source_to_target",
+      "confidence": 0.82
+    },
+    {
+      "id": "e13",
+      "source": "pharmacy_sump",
+      "target": "pharmacy_oht",
+      "label": "",
+      "pipe_size": "",
+      "direction": "source_to_target",
+      "confidence": 0.82
+    }
+  ],
+  "warnings": [
+    "The exact destination mapping of the three motors should be confirmed by an engineer.",
+    "Some handwritten pipe labels are low confidence."
+  ],
+  "style_notes": [
+    "Use blue water-pipeline connectors.",
+    "Use image-like equipment boxes with blue captions.",
+    "Keep the layout on a wide 16:9 engineering slide."
+  ]
+}

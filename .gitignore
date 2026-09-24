@@ -1,7 +1,12 @@
-.venv/
-__pycache__/
-*.pyc
+@"
+node_modules/
 .env
-logs/
-output/
-outputs/
+.env.local
+.env.development
+.env.production
+dist/
+build/
+.vscode/
+.DS_Store
+*.log
+"@ | Set-Content .gitignore
