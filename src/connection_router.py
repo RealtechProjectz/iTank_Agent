@@ -261,83 +261,128 @@ def _prepare_routing_boxes(
             distribution_groups[source_id].append((junction_id, target_id))
 
     assigned: set[str] = set()
+    distribution_trunk_x: dict[str, float] = {}
     for source_id, pairs in distribution_groups.items():
-        source_center = _box_center(physical_boxes[source_id])
+        source_box = physical_boxes[source_id]
+        source_center = _box_center(source_box)
         target_boxes = [physical_boxes[target_id] for _jid, target_id in pairs]
         target_centers = [_box_center(box) for box in target_boxes]
-        xs = [p[0] for p in target_centers]
-        ys = [p[1] for p in target_centers]
-        x_span = max(xs) - min(xs) if len(xs) > 1 else 0.0
-        y_span = max(ys) - min(ys) if len(ys) > 1 else 0.0
+        target_mid_x = sorted(point[0] for point in target_centers)[len(target_centers) // 2]
 
-        if x_span >= y_span:
-            median_y = sorted(ys)[len(ys) // 2]
-            prefer_above = source_center[1] >= median_y
-            above_y = min(box[1] for box in target_boxes) - clearance
-            below_y = max(box[1] + box[3] for box in target_boxes) + clearance
-            above_valid = above_y >= top + 0.04
-            below_valid = below_y <= bottom - 0.04
-            if prefer_above and above_valid:
-                trunk_y = above_y
-            elif (not prefer_above) and below_valid:
-                trunk_y = below_y
-            elif above_valid:
-                trunk_y = above_y
-            elif below_valid:
-                trunk_y = below_y
-            else:
-                # Use the side with more actual canvas room.
-                room_above = min(box[1] for box in target_boxes) - top
-                room_below = bottom - max(box[1] + box[3] for box in target_boxes)
-                trunk_y = max(top + 0.04, min(bottom - 0.04,
-                    above_y if room_above >= room_below else below_y))
-
-            ordered = sorted(pairs, key=lambda pair: _box_center(physical_boxes[pair[1]])[0])
-            for junction_id, target_id in ordered:
-                cx = _box_center(physical_boxes[target_id])[0]
-                result[junction_id] = (
-                    cx - junction_size / 2.0,
-                    trunk_y - junction_size / 2.0,
-                    junction_size,
-                    junction_size,
-                )
-                assigned.add(junction_id)
+        # Horizontal-flow standard: one vertical distributor spine sits on the
+        # source-facing side of the destination field. Each destination therefore
+        # receives a clean horizontal branch and the feeder leaves the source
+        # horizontally.
+        source_is_left = source_center[0] <= target_mid_x
+        if source_is_left:
+            preferred_x = min(box[0] for box in target_boxes) - clearance
+            source_limit = source_box[0] + source_box[2] + clearance
+            if preferred_x <= source_limit:
+                preferred_x = (source_box[0] + source_box[2] + min(box[0] for box in target_boxes)) / 2.0
         else:
-            median_x = sorted(xs)[len(xs) // 2]
-            prefer_left = source_center[0] >= median_x
-            left_x = min(box[0] for box in target_boxes) - clearance
-            right_x = max(box[0] + box[2] for box in target_boxes) + clearance
-            left_valid = left_x >= left + 0.04
-            right_valid = right_x <= right - 0.04
-            if prefer_left and left_valid:
-                trunk_x = left_x
-            elif (not prefer_left) and right_valid:
-                trunk_x = right_x
-            elif left_valid:
-                trunk_x = left_x
-            elif right_valid:
-                trunk_x = right_x
-            else:
-                room_left = min(box[0] for box in target_boxes) - left
-                room_right = right - max(box[0] + box[2] for box in target_boxes)
-                trunk_x = max(left + 0.04, min(right - 0.04,
-                    left_x if room_left >= room_right else right_x))
+            preferred_x = max(box[0] + box[2] for box in target_boxes) + clearance
+            source_limit = source_box[0] - clearance
+            if preferred_x >= source_limit:
+                preferred_x = (source_box[0] + max(box[0] + box[2] for box in target_boxes)) / 2.0
 
-            ordered = sorted(pairs, key=lambda pair: _box_center(physical_boxes[pair[1]])[1])
-            for junction_id, target_id in ordered:
-                cy = _box_center(physical_boxes[target_id])[1]
-                result[junction_id] = (
-                    trunk_x - junction_size / 2.0,
-                    cy - junction_size / 2.0,
-                    junction_size,
-                    junction_size,
-                )
-                assigned.add(junction_id)
+        trunk_x = max(left + 0.04, min(right - 0.04, preferred_x))
+        distribution_trunk_x[source_id] = trunk_x
+        ordered = sorted(pairs, key=lambda pair: _box_center(physical_boxes[pair[1]])[1])
+        for junction_id, target_id in ordered:
+            cy = _box_center(physical_boxes[target_id])[1]
+            result[junction_id] = (
+                trunk_x - junction_size / 2.0,
+                cy - junction_size / 2.0,
+                junction_size,
+                junction_size,
+            )
+            assigned.add(junction_id)
+
+
+    # Keep the distribution entry junction on the exact same vertical spine and
+    # align it with the physical source center so the source feeder is horizontal.
+    for junction_id, source_id in source_for_junction.items():
+        if junction_id in assigned or source_id not in distribution_trunk_x:
+            continue
+        node = node_lookup.get(junction_id)
+        if node is None or str(getattr(node, "topology_role", "") or "") != "distribution_entry_junction":
+            continue
+        cy = _box_center(physical_boxes[source_id])[1]
+        trunk_x = distribution_trunk_x[source_id]
+        result[junction_id] = (
+            trunk_x - junction_size / 2.0,
+            cy - junction_size / 2.0,
+            junction_size,
+            junction_size,
+        )
+        assigned.add(junction_id)
 
     # ------------------------------- collection -----------------------------
-    # Keep the existing mapped positions when a collection spine is already free.
-    # If one lands inside a component, move it to the nearest free side of its
-    # collection target.  This is symmetric and still component-independent.
+    # Horizontal-flow standard for fan-in: all collection junctions for one
+    # target share a vertical collector spine on the source-facing side of the
+    # target. Source branches and the final target entry are therefore horizontal.
+    collection_groups: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for junction_id, target_id in target_for_collection.items():
+        source_ids = collection_sources.get(junction_id, [])
+        for source_id in source_ids:
+            if source_id in physical_boxes and target_id in physical_boxes:
+                collection_groups[target_id].append((junction_id, source_id))
+                break
+
+    collection_trunk_x: dict[str, float] = {}
+    for target_id, pairs in collection_groups.items():
+        target_box = physical_boxes[target_id]
+        target_center = _box_center(target_box)
+        source_boxes = [physical_boxes[source_id] for _jid, source_id in pairs]
+        source_centers = [_box_center(box) for box in source_boxes]
+        source_mid_x = sorted(point[0] for point in source_centers)[len(source_centers) // 2]
+        sources_are_left = source_mid_x <= target_center[0]
+
+        if sources_are_left:
+            preferred_x = target_box[0] - clearance
+            rightmost_source = max(box[0] + box[2] for box in source_boxes)
+            if preferred_x <= rightmost_source + clearance:
+                preferred_x = (rightmost_source + target_box[0]) / 2.0
+        else:
+            preferred_x = target_box[0] + target_box[2] + clearance
+            leftmost_source = min(box[0] for box in source_boxes)
+            if preferred_x >= leftmost_source - clearance:
+                preferred_x = (target_box[0] + target_box[2] + leftmost_source) / 2.0
+
+        trunk_x = max(left + 0.04, min(right - 0.04, preferred_x))
+        collection_trunk_x[target_id] = trunk_x
+        ordered = sorted(pairs, key=lambda pair: _box_center(physical_boxes[pair[1]])[1])
+        for junction_id, source_id in ordered:
+            cy = _box_center(physical_boxes[source_id])[1]
+            result[junction_id] = (
+                trunk_x - junction_size / 2.0,
+                cy - junction_size / 2.0,
+                junction_size,
+                junction_size,
+            )
+            assigned.add(junction_id)
+
+
+    # Keep the collection exit junction on the same vertical spine and align it
+    # with the target center so the final target entry is horizontal.
+    for junction_id, target_id in target_for_collection.items():
+        if junction_id in assigned or target_id not in collection_trunk_x:
+            continue
+        node = node_lookup.get(junction_id)
+        if node is None or str(getattr(node, "topology_role", "") or "") != "collection_exit_junction":
+            continue
+        cy = _box_center(physical_boxes[target_id])[1]
+        trunk_x = collection_trunk_x[target_id]
+        result[junction_id] = (
+            trunk_x - junction_size / 2.0,
+            cy - junction_size / 2.0,
+            junction_size,
+            junction_size,
+        )
+        assigned.add(junction_id)
+
+    # Any remaining junctions are not part of a fan-in/fan-out spine. Keep their
+    # existing mapped position unless it collides with a physical component.
     for junction_id in junction_ids - assigned:
         current = result.get(junction_id)
         if current is None:
@@ -354,16 +399,12 @@ def _prepare_routing_boxes(
             valid_sources = [physical_boxes[sid] for sid in source_ids if sid in physical_boxes]
             if valid_sources:
                 sx = sum(_box_center(b)[0] for b in valid_sources) / len(valid_sources)
-                sy = sum(_box_center(b)[1] for b in valid_sources) / len(valid_sources)
+                source_is_left = sx <= target_center[0]
+                cx = box[0] - clearance if source_is_left else box[0] + box[2] + clearance
+                cy = sum(_box_center(b)[1] for b in valid_sources) / len(valid_sources)
             else:
-                sx, sy = target_center[0], target_center[1] + 1.0
-            dx, dy = target_center[0] - sx, target_center[1] - sy
-            if abs(dx) >= abs(dy):
-                cx = box[0] + box[2] + clearance if dx >= 0 else box[0] - clearance
+                cx = box[0] - clearance
                 cy = target_center[1]
-            else:
-                cx = target_center[0]
-                cy = box[1] + box[3] + clearance if dy >= 0 else box[1] - clearance
             cx = max(left + 0.04, min(right - 0.04, cx))
             cy = max(top + 0.04, min(bottom - 0.04, cy))
             result[junction_id] = (
@@ -1276,13 +1317,16 @@ def _practical_route_rank(
     if component_hits:
         return (component_hits, 1e9, bends, length, excess, port_score)
 
-    # Strong enough to avoid crossings when a comparable clean route exists,
-    # but not so strong that the router runs around the full canvas.
-    conflict_penalty = hard_conflicts * 2.40 + spacing_conflicts * 0.55
+    # For the direct/L candidate family, crossing/overlap quality comes before
+    # distance.  These candidates have at most one bend, so preferring a clean
+    # candidate cannot create the long Z-shaped detours that the old global
+    # router produced.  Once conflict counts are equal, shortest/local geometry
+    # remains the deciding factor.
     locality_penalty = excess * 0.85
     bend_penalty = bends * 0.12
-    total = weighted_cost + conflict_penalty + locality_penalty + bend_penalty
-    return (0, total, bends, length, excess, port_score)
+    total = weighted_cost + locality_penalty + bend_penalty
+    conflict_rank = hard_conflicts * 100 + spacing_conflicts
+    return (0, conflict_rank, total, bends, length, excess + port_score * 0.01)
 
 def _free_corridor_axis_values(
     boxes: Mapping[str, Box],
@@ -2536,6 +2580,527 @@ def _globally_optimize_straight_l_routes(
     return routes
 
 
+
+def _fast_manifold_topology_routes(
+    diagram: DiagramSpec,
+    boxes: Mapping[str, Box],
+    bounds: tuple[float, float, float, float],
+    space: RoutingSpace,
+) -> list[tuple[list[Point], str] | None] | None:
+    """Fast topology router using final component positions.
+
+    Generated junction coordinates in ``topology.py`` are created before the
+    renderer performs its final component layout.  Repeated components can
+    therefore give several synthetic junctions the same provisional coordinate.
+    Routing those provisional points directly caused the visible overlapping
+    trunks/branches seen in dense worksheets.
+
+    This fast path keeps the existing topology and edge relationships unchanged,
+    but derives the *visual* junction positions from the final component boxes.
+    A row of destinations receives a horizontal spine with vertical drops; a
+    column receives a vertical spine with horizontal branches.  The same rule is
+    applied to many-to-one collectors.  Component dragging remains unchanged
+    because these coordinates are recomputed from ``boxes`` every render.
+    """
+    if not diagram.edges:
+        return []
+
+    node_lookup = {node.id: node for node in diagram.nodes}
+    junction_ids = {
+        node.id for node in diagram.nodes
+        if str(getattr(node, "node_type", "") or "") == "junction"
+    }
+    if not junction_ids:
+        return None
+
+    manifold_roles = {
+        "main", "trunk", "branch",
+        "collection_main", "collection_trunk", "collection_branch",
+    }
+    edge_roles = {
+        str(getattr(edge, "topology_role", "") or "")
+        for edge in diagram.edges
+    }
+    if not edge_roles or not edge_roles.issubset(manifold_roles):
+        return None
+
+    left, right, top, bottom = bounds
+    clearance = max(0.12, float(space.routing_clearance) + 0.04)
+
+    def center(box: Box) -> Point:
+        return _box_center(box)
+
+    def physical_box(node_id: str) -> Box | None:
+        node = node_lookup.get(node_id)
+        if node is None or node.node_type == "junction":
+            return None
+        return boxes.get(node_id)
+
+    def dist_group_from_junction(node_id: str) -> str | None:
+        if node_id.startswith("dist_entry__"):
+            return "dist__" + node_id[len("dist_entry__"):]
+        if node_id.startswith("dist__"):
+            head, sep, tail = node_id.rpartition("__")
+            return head if sep and tail.isdigit() else node_id
+        return None
+
+    def collect_group_from_junction(node_id: str) -> str | None:
+        if node_id.startswith("collect_exit__"):
+            return "collect__" + node_id[len("collect_exit__"):]
+        if node_id.startswith("collect__"):
+            head, sep, tail = node_id.rpartition("__")
+            return head if sep and tail.isdigit() else node_id
+        return None
+
+    # group -> data used to rebuild synthetic junction centers from final boxes.
+    distributions: dict[str, dict] = {}
+    collections: dict[str, dict] = {}
+
+    for edge in diagram.edges:
+        role = str(getattr(edge, "topology_role", "") or "")
+        if role == "main" and edge.target in junction_ids:
+            key = dist_group_from_junction(edge.target)
+            if key:
+                distributions.setdefault(key, {"branches": []})["source"] = edge.source
+                distributions[key]["entry"] = edge.target
+        elif role == "branch" and edge.source in junction_ids:
+            key = dist_group_from_junction(edge.source)
+            if key:
+                distributions.setdefault(key, {"branches": []})["branches"].append(
+                    (edge.source, edge.target)
+                )
+        elif role == "collection_main" and edge.source in junction_ids:
+            key = collect_group_from_junction(edge.source)
+            if key:
+                collections.setdefault(key, {"branches": []})["target"] = edge.target
+                collections[key]["exit"] = edge.source
+        elif role == "collection_branch" and edge.target in junction_ids:
+            key = collect_group_from_junction(edge.target)
+            if key:
+                collections.setdefault(key, {"branches": []})["branches"].append(
+                    (edge.target, edge.source)
+                )
+
+    junction_points: dict[str, Point] = {}
+
+    def choose_horizontal_lane(anchor_box: Box, member_boxes: list[Box]) -> float:
+        ax, ay, aw, ah = anchor_box
+        a_top, a_bottom = ay, ay + ah
+        m_top = min(b[1] for b in member_boxes)
+        m_bottom = max(b[1] + b[3] for b in member_boxes)
+        if a_top >= m_bottom + clearance:
+            return (m_bottom + a_top) / 2.0
+        if m_top >= a_bottom + clearance:
+            return (a_bottom + m_top) / 2.0
+        above = min(a_top, m_top) - clearance
+        below = max(a_bottom, m_bottom) + clearance
+        candidates = [y for y in (above, below) if top + clearance <= y <= bottom - clearance]
+        if candidates:
+            anchor_y = ay + ah / 2.0
+            return min(candidates, key=lambda y: abs(y - anchor_y))
+        return max(top + clearance, min(bottom - clearance, (ay + ah / 2.0)))
+
+    def choose_vertical_lane(anchor_box: Box, member_boxes: list[Box]) -> float:
+        ax, ay, aw, ah = anchor_box
+        a_left, a_right = ax, ax + aw
+        m_left = min(b[0] for b in member_boxes)
+        m_right = max(b[0] + b[2] for b in member_boxes)
+        if a_left >= m_right + clearance:
+            return (m_right + a_left) / 2.0
+        if m_left >= a_right + clearance:
+            return (a_right + m_left) / 2.0
+        before = min(a_left, m_left) - clearance
+        after = max(a_right, m_right) + clearance
+        candidates = [x for x in (before, after) if left + clearance <= x <= right - clearance]
+        if candidates:
+            anchor_x = ax + aw / 2.0
+            return min(candidates, key=lambda x: abs(x - anchor_x))
+        return max(left + clearance, min(right - clearance, (ax + aw / 2.0)))
+
+    def assign_distribution(data: dict) -> None:
+        source_id = data.get("source")
+        entry_id = data.get("entry")
+        branches = list(data.get("branches", []))
+        source_box = physical_box(str(source_id or ""))
+        targets = [(jid, tid, physical_box(tid)) for jid, tid in branches]
+        targets = [(jid, tid, box) for jid, tid, box in targets if box is not None]
+        if source_box is None or not targets:
+            return
+
+        centers = [center(box) for _, _, box in targets]
+        xs = [p[0] for p in centers]
+        ys = [p[1] for p in centers]
+        spread_x = max(xs) - min(xs) if len(xs) > 1 else 0.0
+        spread_y = max(ys) - min(ys) if len(ys) > 1 else 0.0
+        member_boxes = [box for _, _, box in targets]
+        scx, scy = center(source_box)
+
+        if spread_x >= spread_y:
+            # Destination row: horizontal bus + vertical drops avoids long
+            # overlapping horizontal branches through neighbouring cards.
+            lane_y = choose_horizontal_lane(source_box, member_boxes)
+            if entry_id:
+                junction_points[str(entry_id)] = (scx, lane_y)
+            for junction_id, _target_id, box in targets:
+                target_port_x = box[0] + box[2] * 0.35
+                junction_points[junction_id] = (target_port_x, lane_y)
+        else:
+            # Destination column: vertical bus + horizontal branches.
+            lane_x = choose_vertical_lane(source_box, member_boxes)
+            if entry_id:
+                junction_points[str(entry_id)] = (lane_x, scy)
+            for junction_id, _target_id, box in targets:
+                target_port_y = box[1] + box[3] * 0.35
+                junction_points[junction_id] = (lane_x, target_port_y)
+
+    def assign_collection(data: dict) -> None:
+        target_id = data.get("target")
+        exit_id = data.get("exit")
+        branches = list(data.get("branches", []))
+        target_box = physical_box(str(target_id or ""))
+        sources = [(jid, sid, physical_box(sid)) for jid, sid in branches]
+        sources = [(jid, sid, box) for jid, sid, box in sources if box is not None]
+        if target_box is None or not sources:
+            return
+
+        centers = [center(box) for _, _, box in sources]
+        xs = [p[0] for p in centers]
+        ys = [p[1] for p in centers]
+        spread_x = max(xs) - min(xs) if len(xs) > 1 else 0.0
+        spread_y = max(ys) - min(ys) if len(ys) > 1 else 0.0
+        member_boxes = [box for _, _, box in sources]
+        tcx, tcy = center(target_box)
+
+        if spread_x >= spread_y:
+            lane_y = choose_horizontal_lane(target_box, member_boxes)
+            if exit_id:
+                junction_points[str(exit_id)] = (tcx, lane_y)
+            for junction_id, _source_id, box in sources:
+                source_port_x = box[0] + box[2] * 0.65
+                junction_points[junction_id] = (source_port_x, lane_y)
+        else:
+            lane_x = choose_vertical_lane(target_box, member_boxes)
+            if exit_id:
+                junction_points[str(exit_id)] = (lane_x, tcy)
+            for junction_id, _source_id, box in sources:
+                source_port_y = box[1] + box[3] * 0.65
+                junction_points[junction_id] = (lane_x, source_port_y)
+
+    for data in distributions.values():
+        assign_distribution(data)
+    for data in collections.values():
+        assign_collection(data)
+
+    # Every synthetic junction participating in this fast path must have a final
+    # geometry point.  Otherwise defer to the existing general router.
+    used_junctions = {
+        node_id
+        for edge in diagram.edges
+        for node_id in (edge.source, edge.target)
+        if node_id in junction_ids
+    }
+    if not used_junctions.issubset(junction_points):
+        return None
+
+    def port_toward(
+        box: Box, point: Point, fraction: float = 0.50
+    ) -> tuple[Point, str]:
+        x, y, w, h = box
+        cx, cy = x + w / 2.0, y + h / 2.0
+        fraction = max(0.18, min(0.82, float(fraction)))
+        dx, dy = point[0] - cx, point[1] - cy
+        if abs(dx) >= abs(dy):
+            port_y = y + h * fraction
+            if dx >= 0:
+                return (x + w, port_y), "right"
+            return (x, port_y), "left"
+        port_x = x + w * fraction
+        if dy >= 0:
+            return (port_x, y + h), "bottom"
+        return (port_x, y), "top"
+
+    # Synthetic trunk edge order was created before final layout and may no longer
+    # match the final left-to-right/top-to-bottom geometry.  Reassign only the
+    # invisible trunk polylines to consecutive final junction points so the bus is
+    # drawn once, continuously, without a last trunk doubling back over the whole
+    # manifold.  Physical branch/main endpoints are untouched.
+    trunk_route_overrides: dict[int, list[Point]] = {}
+    main_route_overrides: dict[int, list[Point]] = {}
+
+    def assign_trunk_segments(
+        group_key: str, junction_list: list[str], role: str, *, pad_unused: bool = False
+    ) -> None:
+        ids = [jid for jid in dict.fromkeys(junction_list) if jid in junction_points]
+        if len(ids) < 2:
+            return
+        pts = [junction_points[jid] for jid in ids]
+        x_span = max(p[0] for p in pts) - min(p[0] for p in pts)
+        y_span = max(p[1] for p in pts) - min(p[1] for p in pts)
+        ids.sort(
+            key=(lambda jid: (junction_points[jid][0], junction_points[jid][1], jid))
+            if x_span >= y_span
+            else (lambda jid: (junction_points[jid][1], junction_points[jid][0], jid))
+        )
+        edge_indices = []
+        for idx, candidate in enumerate(diagram.edges):
+            if str(getattr(candidate, "topology_role", "") or "") != role:
+                continue
+            source_group = (
+                dist_group_from_junction(candidate.source)
+                if role == "trunk"
+                else collect_group_from_junction(candidate.source)
+            )
+            target_group = (
+                dist_group_from_junction(candidate.target)
+                if role == "trunk"
+                else collect_group_from_junction(candidate.target)
+            )
+            if source_group == group_key and target_group == group_key:
+                edge_indices.append(idx)
+        used = 0
+        for idx, a_id, b_id in zip(edge_indices, ids, ids[1:]):
+            trunk_route_overrides[idx] = [
+                junction_points[a_id], junction_points[b_id]
+            ]
+            used += 1
+        if pad_unused and used < len(edge_indices):
+            # A separate provisional entry junction may have created one extra
+            # synthetic trunk edge before final layout.  The physical main now
+            # joins the nearest final bus endpoint directly, so that extra edge
+            # has no visible distance to represent. Keep it renderable as a tiny
+            # non-overlapping internal segment instead of drawing the first bus
+            # segment twice.
+            anchor = junction_points[ids[-1]]
+            for extra_offset, idx in enumerate(edge_indices[used:], start=1):
+                eps = 1e-5 * extra_offset
+                trunk_route_overrides[idx] = [anchor, (anchor[0], anchor[1] + eps)]
+
+    for key, data in distributions.items():
+        assign_trunk_segments(
+            key,
+            [jid for jid, _target in data.get("branches", [])],
+            "trunk",
+            pad_unused=True,
+        )
+    for key, data in collections.items():
+        assign_trunk_segments(
+            key,
+            [jid for jid, _source in data.get("branches", [])]
+            + [str(data.get("exit") or "")],
+            "collection_trunk",
+        )
+
+    # If topology reused a branch junction as the distribution entry (common when
+    # repeated components originally had the same provisional Y coordinate), the
+    # old main edge could run back across the complete bus and visibly overlap the
+    # trunk.  Attach the physical source to the *nearest bus endpoint* instead.
+    # The junctions are invisible, so this changes only the displayed polyline and
+    # keeps all logical relationships/drag updates intact.
+    for key, data in distributions.items():
+        source_id = str(data.get("source") or "")
+        source_box = physical_box(source_id)
+        branch_ids = [jid for jid, _target in data.get("branches", []) if jid in junction_points]
+        if source_box is None or not branch_ids:
+            continue
+        bus_points = [junction_points[jid] for jid in branch_ids]
+        x_span = max(p[0] for p in bus_points) - min(p[0] for p in bus_points)
+        y_span = max(p[1] for p in bus_points) - min(p[1] for p in bus_points)
+        horizontal_bus = x_span >= y_span
+        source_center = center(source_box)
+        bus_endpoints = (
+            [min(bus_points, key=lambda p: p[0]), max(bus_points, key=lambda p: p[0])]
+            if horizontal_bus
+            else [min(bus_points, key=lambda p: p[1]), max(bus_points, key=lambda p: p[1])]
+        )
+        attach = min(
+            bus_endpoints,
+            key=lambda p: abs(p[0] - source_center[0]) + abs(p[1] - source_center[1]),
+        )
+        main_index = next(
+            (
+                idx for idx, edge in enumerate(diagram.edges)
+                if str(getattr(edge, "topology_role", "") or "") == "main"
+                and edge.source == source_id
+                and dist_group_from_junction(edge.target) == key
+            ),
+            None,
+        )
+        if main_index is None:
+            continue
+        x, y, w, h = source_box
+        cx, cy = center(source_box)
+        if horizontal_bus:
+            start = (cx, y if attach[1] < cy else y + h)
+            main_route_overrides[main_index] = _compress(
+                [start, (cx, attach[1]), attach]
+            )
+        else:
+            start = (x if attach[0] < cx else x + w, cy)
+            main_route_overrides[main_index] = _compress(
+                [start, (attach[0], cy), attach]
+            )
+
+    routed: list[tuple[list[Point], str] | None] = []
+    reserved: list[ReservedRoute] = []
+
+    for edge_index, edge in enumerate(diagram.edges):
+        if edge_index in main_route_overrides:
+            points = _compress(main_route_overrides[edge_index])
+            direction_points = (
+                list(reversed(points))
+                if str(getattr(edge, "direction", "") or "") == "target_to_source"
+                else points
+            )
+            routed.append((points, _route_direction(direction_points)))
+            reserved.append(
+                ReservedRoute(
+                    edge_index=edge_index, source=edge.source, target=edge.target,
+                    points=points,
+                    topology_role=str(getattr(edge, "topology_role", "") or "logical"),
+                    topology_channel=str(getattr(edge, "topology_channel", "") or ""),
+                )
+            )
+            continue
+        if edge_index in trunk_route_overrides:
+            points = _compress(trunk_route_overrides[edge_index])
+            direction_points = (
+                list(reversed(points))
+                if str(getattr(edge, "direction", "") or "") == "target_to_source"
+                else points
+            )
+            routed.append((points, _route_direction(direction_points)))
+            reserved.append(
+                ReservedRoute(
+                    edge_index=edge_index,
+                    source=edge.source,
+                    target=edge.target,
+                    points=points,
+                    topology_role=str(getattr(edge, "topology_role", "") or "logical"),
+                    topology_channel=str(getattr(edge, "topology_channel", "") or ""),
+                )
+            )
+            continue
+        source_is_junction = edge.source in junction_ids
+        target_is_junction = edge.target in junction_ids
+
+        if source_is_junction:
+            start = junction_points[edge.source]
+            source_side = "right"
+        else:
+            source_box = boxes.get(edge.source)
+            if source_box is None:
+                return None
+            target_point = junction_points.get(edge.target)
+            if target_point is None:
+                return None
+            source_fraction = (
+                0.65
+                if str(getattr(edge, "topology_role", "") or "") == "collection_branch"
+                else 0.50
+            )
+            start, source_side = port_toward(source_box, target_point, source_fraction)
+
+        if target_is_junction:
+            end = junction_points[edge.target]
+            target_side = "left"
+        else:
+            target_box = boxes.get(edge.target)
+            if target_box is None:
+                return None
+            source_point = junction_points.get(edge.source)
+            if source_point is None:
+                return None
+            target_fraction = (
+                0.35
+                if str(getattr(edge, "topology_role", "") or "") == "branch"
+                else 0.50
+            )
+            end, target_side = port_toward(target_box, source_point, target_fraction)
+
+        # Junction construction above intentionally aligns one coordinate with
+        # its physical endpoint/trunk neighbour, so the normal case is straight.
+        if abs(start[0] - end[0]) <= 1e-7 or abs(start[1] - end[1]) <= 1e-7:
+            points = _compress([start, end])
+        else:
+            # Rare mixed-orientation main/trunk hand-off: choose the shorter of
+            # the two one-bend candidates using the existing obstacle/conflict
+            # quality function.  This is still an L, never a Z detour.
+            candidates = _straight_or_l_paths(start, end)
+            # Synthetic junction rectangles are routing metadata, not visible
+            # obstacles. Choose the shortest one-bend hand-off that also avoids
+            # every unrelated *physical* component. This resolves ties in favour
+            # of the clean L orientation (for example, rise to the bus first
+            # instead of travelling horizontally through a neighbouring Sump).
+            clean_candidates = []
+            for candidate in candidates:
+                blocked = False
+                candidate_segments = list(zip(candidate, candidate[1:]))
+                for seg_index, (a, b) in enumerate(candidate_segments):
+                    for node_id, box in boxes.items():
+                        node = node_lookup.get(node_id)
+                        if node is None or node.node_type == "junction":
+                            continue
+                        if node_id == edge.source and seg_index == 0:
+                            continue
+                        if node_id == edge.target and seg_index == len(candidate_segments) - 1:
+                            continue
+                        if _segment_hits_box(
+                            a, b, box,
+                            _component_clearance(node_id, node_lookup, space),
+                        ):
+                            blocked = True
+                            break
+                    if blocked:
+                        break
+                if not blocked:
+                    clean_candidates.append(candidate)
+            if not clean_candidates:
+                return None
+            points = _compress(
+                min(
+                    clean_candidates,
+                    key=lambda candidate: _route_cost(
+                        candidate, candidate[0], candidate[-1]
+                    ),
+                )
+            )
+
+        # Ignore synthetic junction rectangles as physical obstacles, but never
+        # allow a fast route to pass through another real component body.
+        segments = list(zip(points, points[1:]))
+        for segment_index, (a, b) in enumerate(segments):
+            for node_id, box in boxes.items():
+                node = node_lookup.get(node_id)
+                if node is None or node.node_type == "junction":
+                    continue
+                if node_id == edge.source and segment_index == 0:
+                    continue
+                if node_id == edge.target and segment_index == len(segments) - 1:
+                    continue
+                if _segment_hits_box(
+                    a, b, box, _component_clearance(node_id, node_lookup, space)
+                ):
+                    return None
+
+        direction_points = (
+            list(reversed(points))
+            if str(getattr(edge, "direction", "") or "") == "target_to_source"
+            else points
+        )
+        routed.append((points, _route_direction(direction_points)))
+        reserved.append(
+            ReservedRoute(
+                edge_index=edge_index,
+                source=edge.source,
+                target=edge.target,
+                points=points,
+                topology_role=str(getattr(edge, "topology_role", "") or "logical"),
+                topology_channel=str(getattr(edge, "topology_channel", "") or ""),
+            )
+        )
+
+    return routed
+
 def _plan_connection_routes_impl(
     diagram: DiagramSpec,
     boxes: Mapping[str, Box],
@@ -2554,6 +3119,17 @@ def _plan_connection_routes_impl(
     """
     space = analyze_routing_space(diagram)
     boxes = _prepare_routing_boxes(diagram, boxes, bounds, space)
+
+    # Generated fan-in/fan-out manifolds already encode the desired routing via
+    # invisible junction spines. Route them directly in O(E) instead of running
+    # the general collision/A*/global optimization pipeline. This is the main
+    # performance path for Borewell -> Sump -> OHT worksheets.
+    fast_manifold_routes = _fast_manifold_topology_routes(
+        diagram, boxes, bounds, space
+    )
+    if fast_manifold_routes is not None:
+        return fast_manifold_routes
+
     node_lookup = {node.id: node for node in diagram.nodes}
     degree = {node.id: 0 for node in diagram.nodes}
     for edge in diagram.edges:

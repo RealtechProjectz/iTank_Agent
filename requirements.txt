@@ -9,3 +9,4 @@ python-dotenv>=1.0,<2
 google-genai>=1.0,<2
 
 plotly>=5.20,<7
+graphviz>=0.20,<1

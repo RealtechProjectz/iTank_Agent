@@ -3937,6 +3937,31 @@
   function render(args){
     const incoming=args||{};
     const revision=String(incoming.render_revision||"");
+    const compact=!!incoming.compact_payload;
+
+    // Streamlit reruns can resend this component dozens of times while the
+    // Worksheet visual state itself has not changed. In compact mode Python
+    // intentionally omits the large background PNG, component sprites and
+    // route arrays. Preserve the already-mounted heavy payload instead of
+    // replacing it with the compact placeholders.
+    if(revision&&revision===lastRenderRevision&&compact){
+      argsState={...argsState,...incoming,
+        image_b64:argsState.image_b64||"",
+        routes:argsState.routes||[],
+        hotspots:argsState.hotspots||[],
+        components:argsState.components||[]
+      };
+      return;
+    }
+
+    // If the iframe was recreated, its in-memory payload is gone even though
+    // Python may still think this revision was already sent. Ask Python for one
+    // full refresh, then normal compact reruns can resume.
+    if(compact){
+      emit("request_full_render",{revision});
+      return;
+    }
+
     if(revision&&revision===lastRenderRevision){
       argsState=incoming;
       return;
