@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 from google import genai
 
 from src.ai_pipeline import analyze_sketch, review_diagram
+from src.graphviz_schema import apply_worksheet_graph
 import src.component_catalog as component_catalog_module
 from src.component_catalog import (
     COMPONENT_CATALOG,
@@ -10377,6 +10378,48 @@ def _render_normal_diagram_preview(preview_png: bytes, diagram, worksheet_id: in
             }
         )
 
+    node_labels = {
+        str(getattr(node, "id", "") or ""): str(
+            getattr(node, "label", "") or getattr(node, "id", "") or ""
+        )
+        for node in (getattr(diagram, "nodes", []) or [])
+    }
+    saved_components = []
+    if isinstance(saved_editor_state, dict):
+        saved_components = list(saved_editor_state.get("components", []) or [])
+    pinned_ids = {
+        str(item.get("instance_id", "") or "")
+        for item in saved_components
+        if isinstance(item, dict)
+        and isinstance(item.get("box"), (list, tuple))
+        and len(item.get("box")) == 4
+    }
+    pinned_ids.update(
+        str(node_id)
+        for node_id, override in component_overrides.items()
+        if isinstance(override, dict) and isinstance(override.get("box"), (list, tuple))
+    )
+    manual_edge_ids = {
+        str(edge_id)
+        for edge_id, override in route_overrides.items()
+        if isinstance(override, dict) and override.get("points")
+    }
+    apply_worksheet_graph(
+        normal_routes,
+        box_map,
+        canvas_width,
+        canvas_height,
+        node_labels,
+        pinned_ids,
+        manual_edge_ids,
+    )
+    for hotspot in hotspots:
+        instance_id = str(hotspot.get("instance_id", "") or "")
+        placed = box_map.get(instance_id)
+        if not isinstance(placed, (list, tuple)) or len(placed) != 4:
+            continue
+        hotspot["left"], hotspot["top"], hotspot["width"], hotspot["height"] = placed
+
     # Wireless visual marker only. The Wi-Fi symbol follows the user's explicit
     # Wireless mode selection only. Automatic and Wired must never display it,
     # even if an older/generated edge still carries wireless metadata.
@@ -14652,59 +14695,45 @@ def generate_selected_components(
         if connection_id in valid_base_connection_ids
     }
 
-    # Strict requested rule:
-    # - any positive Distance without Interference is invalid and must not create
-    #   Master / Transmitter / Repeater;
-    # - the existing Wireless auto-expansion is allowed only when a Wireless
-    #   setting has BOTH a positive Distance and Interference selected.
-    distance_without_interference = any(
-        float(config.get("distance_km", 0.0) or 0.0) > 0.0
-        and not bool(config.get("significant_interference", False))
-        for config in base_transport_settings.values()
-    )
-    eligible_wireless = any(
+    # Wireless communication components are driven ONLY by an explicit user
+    # Wireless selection. Automatic/Wired rows, distance values, interference,
+    # normal component selection and automatic routing must never create Master /
+    # Transmitter / Repeater components.
+    explicit_wireless_selected = any(
         normalize_connection_mode(config.get("mode", "automatic")) == "wireless"
-        and float(config.get("distance_km", 0.0) or 0.0) > 0.0
-        and bool(config.get("significant_interference", False))
         for config in base_transport_settings.values()
     )
+    communication_generation_allowed = bool(explicit_wireless_selected)
 
-    if distance_without_interference:
-        st.error(
-            "Interference must be selected when Distance is entered. "
-            "Transmitter, Repeater, and Master will not be generated."
+    # Defensive stale-state cleanup: communication devices are application-added
+    # infrastructure and must not survive after the last explicit Wireless option
+    # has been cleared. This also cleans worksheets saved by older builds where
+    # those auto-added names were not tracked in ``previous_auto_components``.
+    wireless_component_names = {"Master", "Transmitter", "Repeater"}
+    if not explicit_wireless_selected:
+        base_components = [
+            name for name in base_components
+            if name not in wireless_component_names
+        ]
+
+    if explicit_wireless_selected:
+        # Pass the user's settings through unchanged. ``auto_expand_wireless_components``
+        # already activates only from explicit Wireless mode; Automatic rows are
+        # intentionally not promoted from distance/interference heuristics.
+        (
+            expanded_components,
+            auto_connection_ids,
+            expanded_transport_settings,
+            wireless_active,
+        ) = auto_expand_wireless_components(
+            base_components,
+            connection_settings=base_transport_settings,
         )
-
-    communication_generation_allowed = bool(
-        eligible_wireless and not distance_without_interference
-    )
-
-    # Reuse the existing wireless-expansion function. Only its trigger input is
-    # constrained here; no component relationship, router or rendering logic is
-    # replaced. Ineligible Wireless rows are temporarily presented as Automatic
-    # to prevent auto-expansion, then the user's real settings are restored below.
-    expansion_settings = {
-        connection_id: dict(config)
-        for connection_id, config in base_transport_settings.items()
-    }
-    if not communication_generation_allowed:
-        for config in expansion_settings.values():
-            if normalize_connection_mode(config.get("mode", "automatic")) == "wireless":
-                config["mode"] = "automatic"
-
-    (
-        expanded_components,
-        auto_connection_ids,
-        expanded_transport_settings,
-        wireless_active,
-    ) = auto_expand_wireless_components(
-        base_components,
-        connection_settings=expansion_settings,
-    )
-
-    # Preserve the user's exact configured mode/distance/interference on all
-    # original connection candidates after using the constrained trigger above.
-    expanded_transport_settings.update(base_transport_settings)
+    else:
+        expanded_components = list(base_components)
+        auto_connection_ids = []
+        expanded_transport_settings = dict(base_transport_settings)
+        wireless_active = False
 
     # Track only components newly added by automatic communication expansion so
     # they can be cleanly removed if Distance or Interference is later cleared.
