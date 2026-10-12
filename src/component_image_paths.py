@@ -51,7 +51,7 @@ COMPONENT_IMAGE_FILES: dict[str, str] = {
     "Valve Controller (VCT)": "vct.png",
     "Auto Change Over Unit": "auto_change_over.png",
     "Linear Level Sensor (LLS)": "lls.png",
-    "Motorized Valve (MV)": "motorized_valve.png",
+    "Motorized Valve (MV)": "Motorized Valve.png",
     "Pressure Relief Valve (PRV)": "prv.png",
     "Non-Return Valve (NRV)": "nrv.png",
     "Ultrasonic Flow Meter": "ultrasonic_flow_meter.png",
@@ -61,6 +61,7 @@ COMPONENT_IMAGE_FILES: dict[str, str] = {
     "Valve Control Unit (VCU)": "vcu.png",
     "Display (D)": "display.png",
     "Data Logger": "data_logger.png",
+    "ACN 10": "ACN 10.png",
 }
 
 # Backward-compatible public name expected by renderers.py
@@ -104,6 +105,9 @@ COMPONENT_IMAGE_ALIASES: dict[str, str] = {
     "electromagnetic flowmeter": "Electromagnetic Flow Meter",
     "emfm": "Electromagnetic Flow Meter",
     "data logger": "Data Logger",
+    "acn 10": "ACN 10",
+    "acn10": "ACN 10",
+    "acn-10": "ACN 10",
     "datalogger": "Data Logger",
     "dl": "Data Logger",
     "pressure relief valve": "Pressure Relief Valve (PRV)",

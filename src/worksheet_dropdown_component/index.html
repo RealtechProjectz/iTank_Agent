@@ -87,6 +87,91 @@ function commitRename(sheet,input){
   }
   render();
 }
+let portal = null;
+let anchorControl = null;
+let parentBound = false;
+const CLOSED_HEIGHT = 42;
+
+function closePortal(){
+  if(portal && portal.parentNode) portal.parentNode.removeChild(portal);
+  portal = null;
+  try{
+    window.parent.document
+      .querySelectorAll("[data-rts-worksheet-menu]")
+      .forEach(node=>node.remove());
+  }catch(_){}
+}
+function syncPortal(){
+  if(!portal || !anchorControl || !window.frameElement) return;
+  const rect = anchorControl.getBoundingClientRect();
+  const frameRect = window.frameElement.getBoundingClientRect();
+  portal.style.left = (frameRect.left + rect.left) + "px";
+  portal.style.top = (frameRect.top + rect.bottom + 4) + "px";
+}
+function ensureParentClose(){
+  if(parentBound) return;
+  parentBound = true;
+  try{
+    const doc = window.parent.document;
+    doc.addEventListener("pointerdown", event=>{
+      if(!menuOpen) return;
+      if(portal && portal.contains(event.target)) return;
+      menuOpen = false;
+      closePortal();
+      render();
+    }, true);
+    doc.addEventListener("scroll", syncPortal, true);
+    window.parent.addEventListener("resize", syncPortal);
+  }catch(_){}
+}
+function openPortal(anchor){
+  closePortal();
+  ensureParentClose();
+  let doc;
+  try{ doc = window.parent.document; }catch(_){ doc = null; }
+  if(!doc || !window.frameElement) return false;
+  anchorControl = anchor;
+  portal = doc.createElement("div");
+  portal.setAttribute("data-rts-worksheet-menu", "1");
+  portal.style.cssText = [
+    "position:fixed",
+    "width:138px",
+    "z-index:1000000",
+    "background:#fff",
+    "border:1px solid #d7dce1",
+    "border-radius:6px",
+    "box-shadow:0 4px 14px rgba(0,0,0,.14)",
+    "overflow:hidden",
+    "font-family:Inter,Segoe UI,Arial,sans-serif"
+  ].join(";");
+  sheets()
+    .filter(sheet=>Number(sheet.id)!==Number(args.selected_id))
+    .forEach(sheet=>{
+      const row = doc.createElement("div");
+      row.textContent = String(sheet.name || ("Worksheet " + sheet.id));
+      row.style.cssText = "min-height:34px;padding:7px 10px;display:flex;align-items:center;font-size:14px;color:#262730;cursor:pointer;user-select:none;background:#fff;";
+      row.addEventListener("mouseenter", ()=>{ row.style.background = "#f3f5f7"; });
+      row.addEventListener("mouseleave", ()=>{ row.style.background = "#fff"; });
+      row.addEventListener("click", event=>{
+        event.preventDefault();
+        event.stopPropagation();
+        if(optionClickTimer) return;
+        optionClickTimer = setTimeout(()=>{ optionClickTimer = null; }, 350);
+        menuOpen = false;
+        renameId = null;
+        closePortal();
+        if(Number(sheet.id)!==Number(args.selected_id)){
+          args.selected_id = Number(sheet.id);
+          emit("select", sheet.id);
+        }
+        render();
+      });
+      portal.appendChild(row);
+    });
+  doc.body.appendChild(portal);
+  syncPortal();
+  return true;
+}
 function render(){
   root.innerHTML="";
   const current=selected();
@@ -158,45 +243,16 @@ function render(){
   }
 
   root.appendChild(control);
+  anchorControl = control;
 
   if(menuOpen && !(current && renameId===Number(current.id))){
-    const menu=document.createElement("div");
-    menu.className="menu";
-
-    sheets()
-      .filter(sheet=>Number(sheet.id)!==Number(args.selected_id))
-      .forEach(sheet=>{
-      const row=document.createElement("div");
-      row.className="option";
-
-      // Dropdown rows are selection-only. The current worksheet is intentionally
-      // not duplicated here; its name is edited directly in the first box above.
-      row.textContent=String(sheet.name||("Worksheet "+sheet.id));
-      row.addEventListener("click",e=>{
-        e.preventDefault();
-        clearTimeout(optionClickTimer);
-        optionClickTimer=setTimeout(()=>{
-          menuOpen=false;
-          renameId=null;
-          if(Number(sheet.id)!==Number(args.selected_id)){
-            emit("select",sheet.id);
-          }
-          render();
-        },220);
-      });
-
-      menu.appendChild(row);
-    });
-    root.appendChild(menu);
+    const opened = openPortal(control);
+    if(!opened) menuOpen = false;
+  }else{
+    closePortal();
   }
 
-  const otherSheetCount=sheets().filter(
-    sheet=>Number(sheet.id)!==Number(args.selected_id)
-  ).length;
-  const h=(menuOpen && otherSheetCount>0)
-    ? Math.min(44 + (otherSheetCount*34) + 8, 280)
-    : 40;
-  setHeight(h);
+  setHeight(CLOSED_HEIGHT);
 }
 window.addEventListener("message",event=>{
   const data=event.data||{};
@@ -205,7 +261,7 @@ window.addEventListener("message",event=>{
   render();
 });
 ready();
-setHeight(40);
+setHeight(CLOSED_HEIGHT);
 </script>
 </body>
 </html>

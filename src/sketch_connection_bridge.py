@@ -66,6 +66,7 @@ def _catalog_aliases() -> dict[str, str]:
     add("Display (D)", "D", "display")
     add("Auto Change Over Unit", "ACOU", "auto change over", "auto changeover")
     add("Data Logger", "DL", "data logger", "datalogger")
+    add("ACN 10", "ACN10", "acn 10", "acn-10", "acn10")
     add("Motor (Pump)", "MOTOR", "motor", "pump", "water pump", "motor pump")
     add("Linear Level Sensor (LLS)", "LLS", "linear level sensor", "level sensor")
     add("Motorized Valve (MV)", "MV", "motorized valve", "motorised valve")
@@ -145,6 +146,9 @@ def _canonical_component_name(node: object) -> str | None:
         ("display with gsm", "Display with GSM (DWG)"),
         ("dwg", "Display with GSM (DWG)"),
         ("data logger", "Data Logger"),
+        ("acn 10", "ACN 10"),
+        ("acn-10", "ACN 10"),
+        ("acn10", "ACN 10"),
         ("repeater", "Repeater"),
         ("transmitter", "Transmitter"),
         ("master", "Master"),

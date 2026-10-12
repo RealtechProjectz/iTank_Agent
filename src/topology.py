@@ -153,11 +153,9 @@ def _distribution_points(
     """Create a clean reference-style manifold through a target field.
 
     This rule is universal and component-independent.  The target geometry decides
-    whether the manifold is horizontal or vertical.  The main trunk is placed on
-    the side of the target row/column *away from the feeder source*, leaving short
-    uniform branch drops/rises into the destinations.  That produces the clean
-    engineering structure shown in the user's reference without checking any
-    component name or type.
+    whether the manifold is horizontal or vertical.  The trunk sits on the side
+    of the target row or column that faces the feeder, with a short branch into
+    each destination and one elbow from the feeder into that trunk.
     """
     if not target_nodes:
         return []
@@ -175,15 +173,17 @@ def _distribution_points(
         ordered = sorted(target_nodes, key=lambda node: (node.x, node.y, node.id))
         target_y = median([float(node.y) for node in ordered])
         source_y = float(source_node.y)
-        away = -1.0 if source_y >= target_y else 1.0
-        trunk_y = _clamp(target_y + away * clearance)
+        # Keep the trunk between the target row and the feeder, so each branch
+        # is a short drop and the feeder meets that trunk with one elbow.
+        toward = 1.0 if source_y >= target_y else -1.0
+        trunk_y = _clamp(target_y + toward * clearance)
         return [(_clamp(float(node.x)), trunk_y) for node in ordered]
 
     ordered = sorted(target_nodes, key=lambda node: (node.y, node.x, node.id))
     target_x = median([float(node.x) for node in ordered])
     source_x = float(source_node.x)
-    away = -1.0 if source_x >= target_x else 1.0
-    trunk_x = _clamp(target_x + away * clearance)
+    toward = 1.0 if source_x >= target_x else -1.0
+    trunk_x = _clamp(target_x + toward * clearance)
     return [(trunk_x, _clamp(float(node.y))) for node in ordered]
 
 
@@ -322,6 +322,10 @@ def _apply_auto_inline_components(
     for node_id, meta in metadata.items():
         channel = str(meta.inline_channel or "").strip()
         if meta.behavior == "auto_inline" and channel and node_id in node_lookup:
+            # Flow meters and motorized valves stay unconnected until the user
+            # explicitly selects the second component of the pair.
+            if _piping_role(node_lookup[node_id]) in {"fm", "mv"}:
+                continue
             channel_inline_nodes[channel].append(node_id)
 
     if not channel_inline_nodes:
@@ -954,14 +958,17 @@ def _apply_distribution(
     nodes: list[DiagramNode],
     edges: list[DiagramEdge],
     metadata: dict[str, NodeTopologyMeta],
+    locked_pairs: set[tuple[str, str]] | None = None,
 ) -> tuple[list[DiagramNode], list[DiagramEdge]]:
     node_lookup = {node.id: node for node in nodes}
     grouped: dict[tuple[str, str], list[DiagramEdge]] = defaultdict(list)
     passthrough: list[DiagramEdge] = []
+    locked = set(locked_pairs or ())
 
     for edge in edges:
         channel = _edge_channel(edge)
-        if edge.direction == "unknown" or not channel:
+        pair = (str(edge.source), str(edge.target))
+        if edge.direction == "unknown" or not channel or pair in locked:
             passthrough.append(edge)
             continue
         grouped[(edge.source, channel)].append(edge)
@@ -1150,19 +1157,23 @@ def _apply_collection(
     nodes: list[DiagramNode],
     edges: list[DiagramEdge],
     metadata: dict[str, NodeTopologyMeta],
+    locked_pairs: set[tuple[str, str]] | None = None,
 ) -> tuple[list[DiagramNode], list[DiagramEdge]]:
     node_lookup = {node.id: node for node in nodes}
     grouped: dict[tuple[str, str], list[DiagramEdge]] = defaultdict(list)
     passthrough: list[DiagramEdge] = []
+    locked = set(locked_pairs or ())
 
     for edge in edges:
         channel = _edge_channel(edge)
         target_node = node_lookup.get(edge.target)
+        pair = (str(edge.source), str(edge.target))
         if (
             edge.direction == "unknown"
             or not channel
             or target_node is None
             or target_node.node_type == "junction"
+            or pair in locked
         ):
             passthrough.append(edge)
             continue
@@ -1262,9 +1273,245 @@ def _apply_collection(
     return new_nodes, _dedupe_edges(new_edges)
 
 
+def _piping_role(node: DiagramNode) -> str:
+    """Classify only the sump, pump, valve, flow-meter and tank nodes used on the water pipe."""
+    label = str(getattr(node, "label", "") or "").lower()
+    node_type = str(getattr(node, "node_type", "") or "")
+    if node_type == "sump":
+        return "sump"
+    if node_type == "oht":
+        return "oht"
+    if node_type == "motor":
+        return "motor"
+    if node_type == "valve":
+        if "motorized" in label:
+            return "mv"
+        if "non-return" in label or "non return" in label:
+            return "nrv"
+        if "pressure" in label:
+            return "prv"
+    if "flow meter" in label:
+        return "fm"
+    return ""
+
+
+def _process_channel(edge: DiagramEdge) -> bool:
+    return _edge_channel(edge).strip().lower() in {
+        "process",
+        "water",
+        "water_flow",
+        "water-flow",
+        "hydraulic",
+        "fluid",
+    }
+
+
+def _splice_hydraulic_piping(
+    nodes: list[DiagramNode],
+    edges: list[DiagramEdge],
+    metadata: dict[str, NodeTopologyMeta],
+    locked_pairs: set[tuple[str, str]] | None = None,
+) -> list[DiagramEdge]:
+    """Draw the selected sump-to-tank water line through the pump and valve chain.
+
+    The chain is Sump, then each pump with its NRV and PRV, then one shared rise
+    to each overhead tank. Flow meters and motorized valves are not inserted
+    into that line; they receive a route only when the user selects both ends.
+    Sensor, transmitter and borewell lines are left unchanged.
+    """
+    lookup = {node.id: node for node in nodes}
+    roles = {node.id: _piping_role(node) for node in nodes}
+    groups: dict[str, list[str]] = {
+        "motor": [],
+        "nrv": [],
+        "prv": [],
+        "fm": [],
+        "mv": [],
+    }
+    for node in nodes:
+        role = roles.get(node.id, "")
+        if role in groups:
+            groups[role].append(node.id)
+    for values in groups.values():
+        values.sort(key=lambda node_id: _node_sort_key(node_id, metadata))
+    # Selecting a flow meter or motorized valve must not rewrite the water line.
+    if not any(groups[role] for role in ("motor", "nrv", "prv")):
+        return edges
+
+    locked = set(locked_pairs or ())
+    hosts: list[DiagramEdge] = []
+    for raw in edges:
+        edge = _directed_edge(raw)
+        if not _process_channel(edge):
+            continue
+        if (str(edge.source), str(edge.target)) in locked:
+            continue
+        if roles.get(edge.source) == "sump" and roles.get(edge.target) == "oht":
+            hosts.append(edge)
+    if not hosts:
+        return edges
+
+    hosts.sort(key=lambda edge: (
+        _node_sort_key(edge.source, metadata),
+        float(lookup[edge.target].x) if edge.target in lookup else 0.0,
+        edge.id,
+    ))
+    device_ids = {
+        node_id
+        for role in ("motor", "nrv", "prv")
+        for node_id in groups[role]
+    }
+    by_sump: dict[str, list[DiagramEdge]] = defaultdict(list)
+    for edge in hosts:
+        by_sump[edge.source].append(edge)
+
+    def take(role: str, index: int) -> str:
+        values = groups[role]
+        if not values:
+            return ""
+        return values[min(index, len(values) - 1)]
+
+    def unique(chain: list[str]) -> list[str]:
+        result: list[str] = []
+        for node_id in chain:
+            if node_id and (not result or result[-1] != node_id):
+                result.append(node_id)
+        return result
+
+    replacement_hops: list[tuple[DiagramEdge, str, str]] = []
+    used_prefix: set[tuple[str, str]] = set()
+    for sump_id, sump_hosts in by_sump.items():
+        # Dual pumps each pass through an NRV and PRV, then join one rise.
+        # Flow meters and motorized valves stay off this automatic branch.
+        prefix_roots = max(len(groups["motor"]), len(groups["nrv"]), len(groups["prv"]))
+        feeder = sump_id
+        for index in range(prefix_roots):
+            chain = unique([
+                sump_id,
+                take("motor", index),
+                take("nrv", index),
+                take("prv", index),
+            ])
+            if len(chain) < 2:
+                continue
+            if index == 0:
+                feeder = chain[-1]
+            elif chain[-1] != feeder:
+                chain.append(feeder)
+            for source_id, target_id in zip(chain, chain[1:]):
+                hop = (source_id, target_id)
+                if hop in used_prefix:
+                    continue
+                used_prefix.add(hop)
+                replacement_hops.append((sump_hosts[0], source_id, target_id))
+
+        for host in sump_hosts:
+            branch = unique([feeder, host.target])
+            for source_id, target_id in zip(branch, branch[1:]):
+                replacement_hops.append((host, source_id, target_id))
+
+    if not replacement_hops:
+        return edges
+
+    host_ids = {edge.id for edge in hosts}
+    kept: list[DiagramEdge] = []
+    for raw in edges:
+        edge = _directed_edge(raw)
+        if edge.id in host_ids:
+            continue
+        if (str(edge.source), str(edge.target)) in locked:
+            kept.append(raw)
+            continue
+        if _process_channel(edge) and edge.source in device_ids and edge.target in device_ids:
+            continue
+        if _process_channel(edge) and roles.get(edge.source) == "sump" and edge.target in device_ids:
+            continue
+        if _process_channel(edge) and edge.source in device_ids and roles.get(edge.target) == "oht":
+            continue
+        kept.append(raw)
+
+    seen: set[tuple[str, str]] = set()
+    for template, source_id, target_id in replacement_hops:
+        hop = (source_id, target_id)
+        if hop in seen or source_id == target_id:
+            continue
+        seen.add(hop)
+        kept.append(
+            _clone_edge(
+                template,
+                edge_id=f"hydraulic__{_slug(source_id)}__{_slug(target_id)}",
+                source=source_id,
+                target=target_id,
+                label=template.label,
+                role="series",
+                logical_edge_id=template.logical_edge_id or template.id,
+            )
+        )
+    return _dedupe_edges(kept)
+
+
+def _seat_hydraulic_piping(
+    nodes: list[DiagramNode],
+    edges: list[DiagramEdge],
+    metadata: dict[str, NodeTopologyMeta],
+) -> list[DiagramNode]:
+    """Keep pumps, NRV, and PRV beside the sump. Do not seat other cards on a tank."""
+    lookup = {node.id: node for node in nodes}
+    roles = {node.id: _piping_role(node) for node in nodes}
+    if not any(role in {"fm", "mv", "motor", "nrv", "prv"} for role in roles.values()):
+        return nodes
+
+    sumps = [node for node in nodes if roles.get(node.id) == "sump"]
+    updated = dict(lookup)
+
+    def move(node_id: str, x: float, y: float) -> None:
+        node = updated.get(node_id)
+        if node is None:
+            return
+        updated[node_id] = node.model_copy(update={"x": _clamp(x), "y": _clamp(y)})
+
+    if sumps:
+        anchor = min(sumps, key=lambda node: (float(node.x), _node_sort_key(node.id, metadata)))
+        anchor_x = float(anchor.x)
+        anchor_y = float(anchor.y)
+        motors = sorted(
+            [node_id for node_id, role in roles.items() if role == "motor"],
+            key=lambda node_id: _node_sort_key(node_id, metadata),
+        )
+        if len(motors) <= 1:
+            motor_ys = [anchor_y]
+        elif len(motors) == 2:
+            motor_ys = [anchor_y - 0.09, anchor_y + 0.09]
+        else:
+            top = max(0.30, anchor_y - 0.16)
+            bottom = min(0.82, anchor_y + 0.16)
+            motor_ys = [top + (bottom - top) * index / (len(motors) - 1) for index in range(len(motors))]
+        motor_at: dict[str, tuple[float, float]] = {}
+        for index, node_id in enumerate(motors):
+            point = (min(0.46, anchor_x + 0.12), motor_ys[index])
+            motor_at[node_id] = point
+            move(node_id, *point)
+        for role, dx in (("nrv", 0.21), ("prv", 0.30)):
+            ordered = sorted(
+                [node_id for node_id, item_role in roles.items() if item_role == role],
+                key=lambda node_id: _node_sort_key(node_id, metadata),
+            )
+            for index, node_id in enumerate(ordered):
+                if motors:
+                    _px, py = motor_at[motors[min(index, len(motors) - 1)]]
+                elif len(ordered) == 1:
+                    py = anchor_y
+                else:
+                    py = anchor_y - 0.09 + 0.18 * index / (len(ordered) - 1)
+                move(node_id, min(0.64, anchor_x + dx), py)
+
+    return [updated[node.id] for node in nodes]
+
+
 def apply_topology_engine(
     diagram: DiagramSpec,
     node_metadata: dict[str, NodeTopologyMeta] | None = None,
+    locked_pairs: set[tuple[str, str]] | None = None,
 ) -> DiagramSpec:
     """Return a topology-normalized copy of ``diagram``.
 
@@ -1282,13 +1529,15 @@ def apply_topology_engine(
     if not any(_edge_channel(edge) for edge in edges if edge.direction != "unknown"):
         return diagram
 
+    edges = _splice_hydraulic_piping(nodes, edges, metadata, locked_pairs)
     edges = _apply_inline_series(edges, metadata)
     edges = _apply_auto_inline_components(nodes, edges, metadata)
     nodes = _position_inline_gateways(nodes, edges, metadata)
     nodes = _reserve_reference_riser_clearance(nodes, edges, metadata)
+    nodes = _seat_hydraulic_piping(nodes, edges, metadata)
     nodes = _stabilize_large_fanout_layout(nodes, edges, metadata)
-    nodes, edges = _apply_distribution(nodes, edges, metadata)
-    nodes, edges = _apply_collection(nodes, edges, metadata)
+    nodes, edges = _apply_distribution(nodes, edges, metadata, locked_pairs)
+    nodes, edges = _apply_collection(nodes, edges, metadata, locked_pairs)
 
     style_notes = list(diagram.style_notes)
     note = "Topology-first universal distribution/collection junction engine"

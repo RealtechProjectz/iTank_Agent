@@ -154,6 +154,14 @@ class DiagramNode(BaseModel):
         ),
     )
     confidence: float = Field(default=0.80, ge=0.0, le=1.0)
+    stable_id: str = Field(
+        default="",
+        description=(
+            "Permanent component-instance id. Empty for junctions and for "
+            "diagrams saved before stable ids existed. This is not the "
+            "legacy node id (sump_1) and not the display index."
+        ),
+    )
 
 
 class DiagramEdge(BaseModel):
@@ -287,6 +295,21 @@ class DiagramEdge(BaseModel):
     )
 
     confidence: float = Field(default=0.75, ge=0.0, le=1.0)
+    stable_id: str = Field(
+        default="",
+        description=(
+            "Permanent connection id. Independent of the catalog rule-list "
+            "index. Empty when this edge has no stored connection identity."
+        ),
+    )
+    source_stable_id: str = Field(
+        default="",
+        description="Permanent id of the source component instance, when known.",
+    )
+    target_stable_id: str = Field(
+        default="",
+        description="Permanent id of the target component instance, when known.",
+    )
 
 
 class DiagramSpec(BaseModel):

@@ -221,6 +221,17 @@ COMPONENT_CATALOG: tuple[ComponentDefinition, ...] = (
         connection_label="Data Link",
     ),
     ComponentDefinition(
+        name="ACN 10",
+        code="ACN10",
+        node_type="controller",
+        group="Controllers & Displays",
+        layer=2,
+        order=27,
+        preferred_x=0.62,
+        parent_preferences=(),
+        connection_label="Valve Control",
+    ),
+    ComponentDefinition(
         name="Motor (Pump)",
         code="MOTOR",
         node_type="motor",
@@ -648,6 +659,74 @@ ALLOWED_CONNECTION_RULES: tuple[AllowedConnectionRule, ...] = (
         target="Display with GSM (DWG)",
         label="Tank Display Link",
         channel="display",
+    ),
+
+    # Signal and control wiring. These stay on control/display/communication
+    # channels so they never join the blue sump-to-tank water line.
+    # Motorized Valve -> Transmitter and Motorized Valve -> VCT already exist
+    # above; only the ACN 10 link is new. Flow-meter pairs that already exist
+    # above are not repeated, so saved rule indexes stay stable.
+    AllowedConnectionRule(
+        source="Motorized Valve (MV)",
+        target="ACN 10",
+        label="Valve / ACN Link",
+        channel="control",
+    ),
+    AllowedConnectionRule(
+        source="Ultrasonic Flow Meter",
+        target="Data Logger",
+        label="Flow Meter Data Link",
+        channel="communication",
+    ),
+    AllowedConnectionRule(
+        source="Ultrasonic Flow Meter",
+        target="Master",
+        label="Flow Meter / Master Link",
+        channel="control",
+    ),
+    AllowedConnectionRule(
+        source="Flush Flow Meter",
+        target="Display with GSM (DWG)",
+        label="Flow Meter / DWG Link",
+        channel="display",
+    ),
+    AllowedConnectionRule(
+        source="Flush Flow Meter",
+        target="Valve Controller (VCT)",
+        label="Flow Meter / VCT Link",
+        channel="control",
+    ),
+    AllowedConnectionRule(
+        source="Flush Flow Meter",
+        target="Master",
+        label="Flow Meter / Master Link",
+        channel="control",
+    ),
+    AllowedConnectionRule(
+        source="Electromagnetic Flow Meter",
+        target="Valve Controller (VCT)",
+        label="Flow Meter / VCT Link",
+        channel="control",
+    ),
+    AllowedConnectionRule(
+        source="Electromagnetic Flow Meter",
+        target="Data Logger",
+        label="Flow Meter Data Link",
+        channel="communication",
+    ),
+    AllowedConnectionRule(
+        source="Electromagnetic Flow Meter",
+        target="Master",
+        label="Flow Meter / Master Link",
+        channel="control",
+    ),
+    # Appended so existing rule indexes stay stable. OHT Tank to a level
+    # sensor is an explicit user connection, never an inferred one.
+    AllowedConnectionRule(
+        source="OHT Tank",
+        target="Linear Level Sensor (LLS)",
+        label="Tank Sensor Link",
+        channel="sensor",
     ),
 )
 
@@ -1148,6 +1227,51 @@ def _plan_allowed_edges(
                 confidence=1.0,
             )
         )
+
+    # Pairs the user picked in Required Connections that have no catalog rule
+    # still receive one direct line. Nothing is inferred from layout alone.
+    if required_set is not None:
+        known_ids = {instance.node_id for instance in instances}
+        linked = {(edge.source, edge.target) for edge in edges}
+        linked.update((edge.target, edge.source) for edge in edges)
+        for raw_id in sorted(required_set):
+            text = str(raw_id or "").strip()
+            marker = "__to__"
+            if not text.startswith("pair__") or marker not in text[6:]:
+                continue
+            source_id, target_id = text[6:].split(marker, 1)
+            source_id = source_id.strip()
+            target_id = target_id.strip()
+            if (
+                not source_id
+                or not target_id
+                or source_id == target_id
+                or source_id not in known_ids
+                or target_id not in known_ids
+                or (source_id, target_id) in linked
+            ):
+                continue
+            edges.append(
+                DiagramEdge(
+                    id=f"edge__{text}",
+                    source=source_id,
+                    target=target_id,
+                    label="Connection",
+                    pipe_size="",
+                    direction="source_to_target",
+                    source_side="right",
+                    target_side="left",
+                    waypoints=[],
+                    locked_route=True,
+                    route_hint="direct",
+                    topology_channel="control",
+                    topology_role="logical",
+                    logical_edge_id=f"edge__{text}",
+                    confidence=1.0,
+                )
+            )
+            linked.add((source_id, target_id))
+            linked.add((target_id, source_id))
 
     return edges
 
@@ -1786,7 +1910,158 @@ def _graph_positions(
             )
             positions[instance.node_id] = (x, y_fixed)
 
+    sumps = [
+        instance for instance in instances
+        if instance.definition.node_type == "sump"
+    ]
+    tanks = [
+        instance for instance in instances
+        if instance.definition.node_type == "oht"
+    ]
+    bores = [
+        instance for instance in instances
+        if instance.definition.node_type == "bore"
+    ]
+    if sumps:
+        sumps.sort(key=lambda instance: (instance.instance_index, instance.node_id))
+        y_top, y_bottom = 0.28, 0.78
+        for index, instance in enumerate(sumps):
+            y = (
+                0.50
+                if len(sumps) == 1
+                else y_top + (y_bottom - y_top) * index / (len(sumps) - 1)
+            )
+            positions[instance.node_id] = (0.18, y)
+    if bores:
+        # Borewells keep one fixed slot. Adding sumps or tanks does not move them.
+        bores.sort(key=lambda instance: (instance.instance_index, instance.node_id))
+        anchor_y = 0.53
+        for index, instance in enumerate(bores):
+            y = anchor_y + (index - (len(bores) - 1) / 2.0) * 0.22
+            positions[instance.node_id] = (0.78, max(0.18, min(0.84, y)))
+    if tanks:
+        tanks.sort(key=lambda instance: (instance.instance_index, instance.node_id))
+        x_left, x_right = 0.42, 0.90
+        for index, instance in enumerate(tanks):
+            x = (
+                (x_left + x_right) / 2.0
+                if len(tanks) == 1
+                else x_left + (x_right - x_left) * index / (len(tanks) - 1)
+            )
+            positions[instance.node_id] = (x, 0.12)
+    placed = {instance.node_id for instance in sumps}
+    placed.update(instance.node_id for instance in tanks)
+    placed.update(instance.node_id for instance in bores)
+    hydraulic = [
+        instance for instance in instances
+        if _hydraulic_piping_role(instance) in {"motor", "nrv", "prv"}
+        and instance.node_id not in placed
+    ]
+    placed.update(instance.node_id for instance in hydraulic)
+    others = [
+        instance for instance in instances
+        if instance.node_id not in placed
+    ]
+    if others:
+        others.sort(key=lambda instance: (
+            instance.definition.order,
+            instance.definition.node_type,
+            instance.instance_index,
+            instance.node_id,
+        ))
+        groups: list[list] = []
+        for instance in others:
+            if groups and groups[-1][0].definition.node_type == instance.definition.node_type:
+                groups[-1].append(instance)
+            else:
+                groups.append([instance])
+        # Below the top-row tanks and left of the fixed borewell, so a new
+        # card never starts on top of the OHT Tank.
+        x_left, x_right = 0.40, 0.62
+        y_top, y_bottom = 0.42, 0.84
+        for group_index, group in enumerate(groups):
+            x = (
+                (x_left + x_right) / 2.0
+                if len(groups) == 1
+                else x_left + (x_right - x_left) * group_index / (len(groups) - 1)
+            )
+            for index, instance in enumerate(group):
+                y = (
+                    (y_top + y_bottom) / 2.0
+                    if len(group) == 1
+                    else y_top + (y_bottom - y_top) * index / (len(group) - 1)
+                )
+                positions[instance.node_id] = (x, y)
+
+    _place_hydraulic_piping(positions, sumps, tanks, hydraulic)
     return positions
+
+
+def _hydraulic_piping_role(instance) -> str:
+    """Return the piping role for a flow meter, valve, or pump. Other types are blank."""
+    code = str(getattr(instance.definition, "code", "") or "")
+    if code == "MOTOR":
+        return "motor"
+    if code == "NRV":
+        return "nrv"
+    if code == "PRV":
+        return "prv"
+    if code == "MV":
+        return "mv"
+    if code in {"UFM", "FFM", "EMFM"}:
+        return "fm"
+    return ""
+
+
+def _place_hydraulic_piping(positions, sumps, tanks, hydraulic) -> None:
+    """Seat pumps, NRV, PRV, flow meters and motorized valves on the sump-to-tank pipe.
+
+    Sumps stay on the left, tanks stay on the top row, and borewells are not in
+    this list. Pumps with their NRV and PRV sit beside the sump. Each tank inlet
+    gets a flow meter and then a motorized valve directly beneath the tank.
+    """
+    if not hydraulic:
+        return
+    groups: dict[str, list] = {"motor": [], "nrv": [], "prv": [], "fm": [], "mv": []}
+    for instance in hydraulic:
+        groups[_hydraulic_piping_role(instance)].append(instance)
+    for values in groups.values():
+        values.sort(key=lambda item: (item.instance_index, item.node_id))
+
+    sump_points = [positions[item.node_id] for item in sumps if item.node_id in positions]
+    if sump_points:
+        anchor_x = min(point[0] for point in sump_points)
+        anchor_y = sum(point[1] for point in sump_points) / len(sump_points)
+    else:
+        anchor_x, anchor_y = 0.18, 0.50
+
+    def column_ys(count: int) -> list[float]:
+        if count <= 1:
+            return [anchor_y]
+        if count == 2:
+            return [anchor_y - 0.09, anchor_y + 0.09]
+        top = max(0.30, anchor_y - 0.16)
+        bottom = min(0.82, anchor_y + 0.16)
+        return [top + (bottom - top) * index / (count - 1) for index in range(count)]
+
+    motor_ys = column_ys(len(groups["motor"]))
+    for index, instance in enumerate(groups["motor"]):
+        positions[instance.node_id] = (min(0.46, anchor_x + 0.12), motor_ys[index])
+    for index, instance in enumerate(groups["nrv"]):
+        partner = groups["motor"][min(index, len(groups["motor"]) - 1)] if groups["motor"] else None
+        y = positions[partner.node_id][1] if partner is not None else column_ys(len(groups["nrv"]))[index]
+        positions[instance.node_id] = (min(0.56, anchor_x + 0.21), y)
+    for index, instance in enumerate(groups["prv"]):
+        partner = groups["nrv"][min(index, len(groups["nrv"]) - 1)] if groups["nrv"] else None
+        if partner is None and groups["motor"]:
+            partner = groups["motor"][min(index, len(groups["motor"]) - 1)]
+        y = positions[partner.node_id][1] if partner is not None else column_ys(len(groups["prv"]))[index]
+        positions[instance.node_id] = (min(0.64, anchor_x + 0.30), y)
+
+    for index, instance in enumerate(groups["mv"]):
+        positions[instance.node_id] = (0.46, min(0.84, 0.42 + index * 0.14))
+    for index, instance in enumerate(groups["fm"]):
+        positions[instance.node_id] = (0.60, min(0.84, 0.42 + index * 0.14))
 
 
 # =============================================================================
@@ -1922,6 +2197,7 @@ def build_selected_component_diagram(
     inline_placement_settings: Mapping[str, Mapping[str, Any]] | None = None,
     *,
     expand_repeated_instances: bool = False,
+    locked_endpoint_pairs: Iterable[tuple[str, str]] | None = None,
 ) -> DiagramSpec:
     """Build the selected-component diagram using allowed rules + user intent.
 
@@ -1953,6 +2229,9 @@ def build_selected_component_diagram(
         item = instance.definition
         x, y = positions.get(instance.node_id, (item.preferred_x, 0.50))
         details = [f"Code: {item.code}", item.group]
+        node_label = instance.label
+        if item.code == "MV":
+            node_label = f'{node_label}  2"'
 
         if instance.instance_count > 1:
             details.append(
@@ -1966,7 +2245,7 @@ def build_selected_component_diagram(
         nodes.append(
             DiagramNode(
                 id=instance.node_id,
-                label=instance.label,
+                label=node_label,
                 node_type=item.node_type,
                 x=x,
                 y=y,
@@ -2026,4 +2305,13 @@ def build_selected_component_diagram(
             inline_placement=placement,
             inline_attach_id=attach_id,
         )
-    return apply_topology_engine(logical_diagram, topology_metadata)
+    locked_pairs = {
+        (str(source), str(target))
+        for source, target in list(locked_endpoint_pairs or [])
+        if str(source) and str(target)
+    }
+    return apply_topology_engine(
+        logical_diagram,
+        topology_metadata,
+        locked_pairs=locked_pairs,
+    )
